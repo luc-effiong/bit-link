@@ -210,3 +210,98 @@
     (ok (list))
   )
 )
+
+;; Check if a payment link is expired but not yet marked as expired
+(define-read-only (check-link-expired (id uint))
+  (match (map-get? payment-links { id: id })
+    link (if (and
+        (is-eq (get state link) STATE-PENDING)
+        (is-expired (get expires-at link))
+      )
+      (ok true)
+      (ok false)
+    )
+    (err ERR-NOT-FOUND)
+  )
+)
+
+;; Get payment link with enhanced status information and metadata
+(define-read-only (get-link-status (id uint))
+  (match (map-get? payment-links { id: id })
+    link (ok {
+      link: link,
+      is-expired: (is-expired (get expires-at link)),
+      blocks-remaining: (if (> (get expires-at link) stacks-block-height)
+        (- (get expires-at link) stacks-block-height)
+        u0
+      ),
+      can-fulfill: (and 
+        (is-eq (get state link) STATE-PENDING)
+        (< stacks-block-height (get expires-at link))
+      )
+    })
+    (err ERR-NOT-FOUND)
+  )
+)
+
+;; PUBLIC FUNCTIONS
+
+;; Create a new payment link with specified recipient, amount, and expiration
+(define-public (create-payment-link
+    (recipient principal)
+    (amount uint)
+    (expires-in uint)
+    (memo (optional (string-ascii 256)))
+  )
+  (let (
+    (new-id (+ (var-get last-id) u1))
+    (expiration-height (+ stacks-block-height expires-in))
+  )
+  (begin
+    ;; Comprehensive input validation
+    (asserts! (>= amount MIN-PAYMENT-AMOUNT) (err ERR-INVALID-AMOUNT))
+    (asserts! (<= expires-in MAX-EXPIRATION-BLOCKS) (err ERR-MAX-EXPIRATION-EXCEEDED))
+    (asserts! (> expires-in u0) (err ERR-INVALID-AMOUNT))
+    (asserts! (validate-memo memo) (err ERR-EMPTY-MEMO))
+    (asserts! (validate-recipient recipient) (err ERR-INVALID-RECIPIENT))
+    
+    ;; Check for potential overflow in expiration calculation
+    (asserts! (< expires-in (- u340282366920938463463374607431768211455 stacks-block-height))
+      (err ERR-MAX-EXPIRATION-EXCEEDED)
+    )
+    
+    ;; Update counter and statistics
+    (var-set last-id new-id)
+    (var-set total-links-created (+ (var-get total-links-created) u1))
+    
+    ;; Create payment link with comprehensive metadata
+    (map-set payment-links { id: new-id } {
+      creator: tx-sender,
+      recipient: recipient,
+      amount: amount,
+      created-at: stacks-block-height,
+      expires-at: expiration-height,
+      memo: memo,
+      state: STATE-PENDING,
+      payment-tx: none,
+      fulfiller: none
+    })
+    
+    ;; Update indexing for efficient queries
+    (add-id-to-creator-list tx-sender new-id)
+    (add-id-to-recipient-list recipient new-id)
+    
+    ;; Emit creation event for external monitoring
+    (print {
+      event: "payment-link-created",
+      id: new-id,
+      creator: tx-sender,
+      recipient: recipient,
+      amount: amount,
+      expires-at: expiration-height,
+      memo: memo
+    })
+    
+    (ok new-id)
+  ))
+)
