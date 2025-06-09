@@ -305,3 +305,124 @@
     (ok new-id)
   ))
 )
+
+;; Fulfill a payment link by transferring sBTC to the recipient
+(define-public (fulfill-payment-link (id uint))
+  (let (
+    (link (unwrap! (map-get? payment-links { id: id }) (err ERR-NOT-FOUND)))
+  )
+  (begin
+    ;; Input and state validation
+    (asserts! (validate-link-id id) (err ERR-NOT-FOUND))
+    (asserts! (is-eq (get state link) STATE-PENDING) (err ERR-NOT-PENDING))
+    (asserts! (< stacks-block-height (get expires-at link)) (err ERR-EXPIRED))
+    (asserts! (not (is-eq tx-sender (get recipient link))) (err ERR-SELF-PAYMENT))
+    
+    ;; Execute sBTC transfer from fulfiller to recipient
+    (try! (contract-call? SBTC-CONTRACT transfer 
+      (get amount link) 
+      tx-sender
+      (get recipient link) 
+      none
+    ))
+    
+    ;; Update payment link state with fulfillment details
+    (map-set payment-links { id: id }
+      (merge link {
+        state: STATE-PAID,
+        fulfiller: (some tx-sender),
+        payment-tx: none ;; Could be enhanced with actual tx-hash in future
+      })
+    )
+    
+    ;; Update protocol statistics and indices
+    (var-set total-links-fulfilled (+ (var-get total-links-fulfilled) u1))
+    (var-set total-volume (+ (var-get total-volume) (get amount link)))
+    (add-id-to-fulfiller-list tx-sender id)
+    
+    ;; Emit payment completion event
+    (print {
+      event: "payment-link-fulfilled",
+      id: id,
+      fulfiller: tx-sender,
+      recipient: (get recipient link),
+      creator: (get creator link),
+      amount: (get amount link),
+      memo: (get memo link)
+    })
+    
+    (ok id)
+  ))
+)
+
+;; Cancel a pending payment link (creator only)
+(define-public (cancel-payment-link (id uint))
+  (let (
+    (link (unwrap! (map-get? payment-links { id: id }) (err ERR-NOT-FOUND)))
+  )
+  (begin
+    ;; Input and authorization validation
+    (asserts! (validate-link-id id) (err ERR-NOT-FOUND))
+    (asserts! (is-eq tx-sender (get creator link)) (err ERR-UNAUTHORIZED))
+    (asserts! (is-eq (get state link) STATE-PENDING) (err ERR-NOT-PENDING))
+    
+    ;; Update state to canceled
+    (map-set payment-links { id: id }
+      (merge link { state: STATE-CANCELED })
+    )
+    
+    ;; Emit cancellation event for tracking
+    (print {
+      event: "payment-link-canceled",
+      id: id,
+      creator: tx-sender,
+      recipient: (get recipient link)
+    })
+    
+    (ok id)
+  ))
+)
+
+;; Mark an expired payment link as expired (callable by anyone for cleanup)
+(define-public (mark-expired (id uint))
+  (let (
+    (link (unwrap! (map-get? payment-links { id: id }) (err ERR-NOT-FOUND)))
+  )
+  (begin
+    ;; Input and state validation
+    (asserts! (validate-link-id id) (err ERR-NOT-FOUND))
+    (asserts! (is-eq (get state link) STATE-PENDING) (err ERR-NOT-PENDING))
+    (asserts! (is-expired (get expires-at link)) (err ERR-EXPIRED))
+    
+    ;; Update state to expired
+    (map-set payment-links { id: id } 
+      (merge link { state: STATE-EXPIRED })
+    )
+    
+    ;; Emit expiration event for cleanup tracking
+    (print {
+      event: "payment-link-expired",
+      id: id,
+      creator: (get creator link),
+      recipient: (get recipient link)
+    })
+    
+    (ok id)
+  ))
+)
+
+;; Batch retrieval function for multiple payment links (UI optimization)
+(define-public (get-multiple-links (ids (list 20 uint)))
+  (begin
+    (asserts! (<= (len ids) MAX-BATCH-SIZE) (err ERR-INVALID-AMOUNT))
+    (ok (map get-link-or-none ids))
+  )
+)
+
+;; Get multiple payment links with smaller batch size (simple batch operation)
+(define-public (get-links-batch (ids (list 10 uint)))
+  (begin
+    (asserts! (<= (len ids) u10) (err ERR-INVALID-AMOUNT))
+    (ok (map get-link-or-none ids))
+  )
+)
