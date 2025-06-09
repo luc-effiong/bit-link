@@ -107,3 +107,106 @@
     new-list
   ))
 )
+
+;; Add payment link ID to recipient's index list
+(define-private (add-id-to-recipient-list (user principal) (id uint))
+  (let (
+    (current-data (default-to { ids: (list) } (map-get? links-by-recipient { recipient: user })))
+    (current-list (get ids current-data))
+    (new-list (unwrap! (as-max-len? (append current-list id) u50) current-list))
+  )
+  (begin
+    (map-set links-by-recipient { recipient: user } { ids: new-list })
+    new-list
+  ))
+)
+
+;; Add payment link ID to fulfiller's index list
+(define-private (add-id-to-fulfiller-list (user principal) (id uint))
+  (let (
+    (current-data (default-to { ids: (list) } (map-get? links-by-fulfiller { fulfiller: user })))
+    (current-list (get ids current-data))
+    (new-list (unwrap! (as-max-len? (append current-list id) u50) current-list))
+  )
+  (begin
+    (map-set links-by-fulfiller { fulfiller: user } { ids: new-list })
+    new-list
+  ))
+)
+
+;; Check if a payment link has expired based on current block height
+(define-private (is-expired (expires-at uint))
+  (>= stacks-block-height expires-at)
+)
+
+;; Helper function for batch operations - returns link or none
+(define-private (get-link-or-none (id uint))
+  (map-get? payment-links { id: id })
+)
+
+;; Validate memo input ensuring proper length constraints
+(define-private (validate-memo (memo (optional (string-ascii 256))))
+  (match memo
+    some-memo (and (> (len some-memo) u0) (<= (len some-memo) u256))
+    true
+  )
+)
+
+;; Validate payment link ID is within valid range
+(define-private (validate-link-id (id uint))
+  (and (> id u0) (<= id (var-get last-id)))
+)
+
+;; Validate recipient address to prevent self-payments
+(define-private (validate-recipient (recipient principal))
+  (not (is-eq recipient tx-sender))
+)
+
+;; READ-ONLY FUNCTIONS
+
+;; Get the current payment link ID counter
+(define-read-only (get-last-id)
+  (ok (var-get last-id))
+)
+
+;; Get comprehensive protocol statistics
+(define-read-only (get-protocol-stats)
+  (ok {
+    total-links-created: (var-get total-links-created),
+    total-links-fulfilled: (var-get total-links-fulfilled),
+    total-volume: (var-get total-volume),
+    current-block: stacks-block-height
+  })
+)
+
+;; Retrieve complete details of a specific payment link
+(define-read-only (get-payment-link (id uint))
+  (match (map-get? payment-links { id: id })
+    entry (ok entry)
+    (err ERR-NOT-FOUND)
+  )
+)
+
+;; Get all payment link IDs created by a specific principal
+(define-read-only (get-creator-links (creator principal))
+  (match (map-get? links-by-creator { creator: creator })
+    entry (ok (get ids entry))
+    (ok (list))
+  )
+)
+
+;; Get all payment link IDs where a principal is the recipient
+(define-read-only (get-recipient-links (recipient principal))
+  (match (map-get? links-by-recipient { recipient: recipient })
+    entry (ok (get ids entry))
+    (ok (list))
+  )
+)
+
+;; Get all payment link IDs fulfilled by a specific principal
+(define-read-only (get-fulfiller-links (fulfiller principal))
+  (match (map-get? links-by-fulfiller { fulfiller: fulfiller })
+    entry (ok (get ids entry))
+    (ok (list))
+  )
+)
